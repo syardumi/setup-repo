@@ -1,0 +1,39 @@
+name: Deploy to Production
+
+# Template: place at .github/workflows/deploy-prod.yml in each new repo.
+# Deploys to the production stage via Serverless Framework v4 whenever
+# a tag matching v*.*.* is pushed on main (e.g. v1.0.0, v1.2.3).
+#
+# Requires repo secrets/vars (see setup-repo-secrets workflow):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (variable)
+#   SERVERLESS_ACCESS_KEY  <-- required by Serverless Framework v4 for
+#                               non-interactive CLI auth in CI
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm ci
+
+      - name: Serverless deploy (production)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+        run: npx serverless deploy --stage production

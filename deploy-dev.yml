@@ -1,0 +1,38 @@
+name: Deploy to Dev
+
+# Template: place at .github/workflows/deploy-dev.yml in each new repo.
+# Deploys the main branch to the dev stage via Serverless Framework v4
+# any time a commit lands on main.
+#
+# Requires repo secrets/vars (see setup-repo-secrets workflow):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (variable)
+#   SERVERLESS_ACCESS_KEY  <-- required by Serverless Framework v4 for
+#                               non-interactive CLI auth in CI
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm ci
+
+      - name: Serverless deploy (dev)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+        run: npx serverless deploy --stage dev

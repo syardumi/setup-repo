@@ -1,0 +1,84 @@
+name: Bootstrap Deploy Workflows
+
+# Manual trigger, runnable from the GitHub mobile app.
+# Lives in the same control repo as setup-repo-secrets-workflow.yml.
+#
+# Copies the dev + prod Serverless Framework deploy workflows (stored
+# in THIS control repo under templates/serverless/) into a target repo
+# and opens a PR there for review — matching your normal review/approve
+# flow, so nothing lands on the target repo's main branch without a look.
+#
+# One-time setup for this control repo:
+#   1. Add these files here, at these exact paths:
+#        templates/serverless/deploy-dev.yml
+#        templates/serverless/deploy-prod.yml
+#   2. Make sure CONTROL_PAT (used by setup-repo-secrets-workflow too)
+#      has permission to push branches and open PRs on target repos.
+#
+# To run from mobile:
+#   Open this repo in the GitHub app > Actions tab >
+#   "Bootstrap Deploy Workflows" > Run workflow > enter owner/repo > Run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repo in owner/name form, e.g. steve-dev/quelby-service"
+        required: true
+        type: string
+
+jobs:
+  bootstrap-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout control repo (for templates)
+        uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "repo-bootstrap-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+
+      - name: Clone target repo
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" target
+          cd target
+          git checkout -b add-deploy-workflows
+
+      - name: Copy templates into target repo
+        run: |
+          mkdir -p target/.github/workflows
+          cp templates/serverless/deploy-dev.yml target/.github/workflows/deploy-dev.yml
+          cp templates/serverless/deploy-prod.yml target/.github/workflows/deploy-prod.yml
+
+      - name: Commit and push
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          cd target
+          git add .github/workflows/deploy-dev.yml .github/workflows/deploy-prod.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit (workflows already exist and match)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "Add dev/prod Serverless deploy workflows"
+          git push -u origin add-deploy-workflows
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR for review
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          gh pr create \
+            --repo "${{ inputs.target_repo }}" \
+            --head add-deploy-workflows \
+            --base main \
+            --title "Add dev/prod deploy workflows" \
+            --body "Adds Serverless Framework deploy workflows: push to main deploys to dev, tags matching v*.*.* deploy to production.
+
+Requires repo secrets/vars: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (variable), and SERVERLESS_ACCESS_KEY (Serverless Framework v4 CI auth) — plus a package.json with the Serverless Framework as a dependency."
