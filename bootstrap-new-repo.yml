@@ -1,0 +1,120 @@
+name: Bootstrap New Repo
+
+# Manual trigger, runnable from the GitHub mobile app.
+# Combines what setup-repo-secrets-workflow.yml and
+# bootstrap-deploy-workflows.yml did separately: pushes standard
+# secrets/variables into a newly created repo, THEN copies in the
+# dev/prod Serverless Framework deploy workflows and opens a PR
+# there for review. One tap from mobile covers a brand new repo
+# end to end.
+#
+# One-time setup for this control repo:
+#   1. Add these files here, at these exact paths:
+#        templates/serverless/deploy-dev.yml
+#        templates/serverless/deploy-prod.yml
+#   2. In this control repo's Settings > Secrets, add:
+#        CONTROL_PAT             - token with repo/secrets admin access
+#                                    on repos you'll be provisioning
+#        ANTHROPIC_API_KEY       - your standard Claude API key
+#        AWS_ACCESS_KEY_ID       - your standard AWS access key
+#        AWS_SECRET_ACCESS_KEY   - your standard AWS secret key
+#        SERVERLESS_ACCESS_KEY   - Serverless Framework v4 CI auth key
+#
+# To run from mobile:
+#   Open this repo in the GitHub app > Actions tab >
+#   "Bootstrap New Repo" > Run workflow > enter owner/repo > Run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Target repo in owner/name form, e.g. steve-dev/quelby-service"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region for the target repo"
+        required: false
+        default: "us-east-1"
+        type: string
+
+jobs:
+  push-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push secrets to target repo
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          gh secret set ANTHROPIC_API_KEY --repo "$TARGET_REPO" --body "${{ secrets.ANTHROPIC_API_KEY }}"
+          gh secret set AWS_ACCESS_KEY_ID --repo "$TARGET_REPO" --body "${{ secrets.AWS_ACCESS_KEY_ID }}"
+          gh secret set AWS_SECRET_ACCESS_KEY --repo "$TARGET_REPO" --body "${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          gh secret set SERVERLESS_ACCESS_KEY --repo "$TARGET_REPO" --body "${{ secrets.SERVERLESS_ACCESS_KEY }}"
+
+      - name: Push variables to target repo
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          AWS_REGION: ${{ inputs.aws_region }}
+        run: |
+          gh variable set AWS_REGION --repo "$TARGET_REPO" --body "$AWS_REGION"
+          gh variable set DEV_ENVIRONMENT_NAME --repo "$TARGET_REPO" --body "dev"
+          gh variable set PROD_ENVIRONMENT_NAME --repo "$TARGET_REPO" --body "production"
+
+  push-workflows:
+    needs: push-secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout control repo (for templates)
+        uses: actions/checkout@v4
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "repo-bootstrap-bot"
+          git config --global user.email "actions@users.noreply.github.com"
+
+      - name: Clone target repo
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ inputs.target_repo }}.git" target
+          cd target
+          git checkout -b add-deploy-workflows
+
+      - name: Copy templates into target repo
+        run: |
+          mkdir -p target/.github/workflows
+          cp templates/serverless/deploy-dev.yml target/.github/workflows/deploy-dev.yml
+          cp templates/serverless/deploy-prod.yml target/.github/workflows/deploy-prod.yml
+
+      - name: Commit and push
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          cd target
+          git add .github/workflows/deploy-dev.yml .github/workflows/deploy-prod.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit (workflows already exist and match)."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "Add dev/prod Serverless deploy workflows"
+          git push -u origin add-deploy-workflows
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR for review
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CONTROL_PAT }}
+        run: |
+          gh pr create \
+            --repo "${{ inputs.target_repo }}" \
+            --head add-deploy-workflows \
+            --base main \
+            --title "Add dev/prod deploy workflows" \
+            --body "Adds Serverless Framework deploy workflows: push to main deploys to dev, tags matching v*.*.* deploy to production.
+
+Secrets/vars for this were pushed automatically by the push-secrets job in this same run: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (variable), SERVERLESS_ACCESS_KEY.
+
+Still needed: a package.json with the Serverless Framework as a dependency, if this repo doesn't already have one."
